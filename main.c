@@ -29,6 +29,27 @@ void mulMatrix (double* A, double* B, double* C, int row_count, int column_size,
 }
 
 
+void collectData(double *partC, double *C, MPI_Comm gridCommunicator, int *dims, int processNum) {
+    MPI_Datatype block;
+    MPI_Type_vector(row_count, column_count, n2, MPI_DOUBLE, &block);
+    MPI_Type_commit(&block);
+    int *receiveCounts = calloc(len, sizeof(int) * processNum);
+    int *displacement = calloc(len, sizeof(int) * processNum);
+    int coords[2];
+    for (int i = 0; i < processNum; ++i) {
+        receiveCounts[i] = 1;
+        MPI_Cart_coords(gridCommunicator, i, 2, coords);
+        displacement[i] = dims[0] * (row_count) * coords[1] + coords[0];
+    }
+    int rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Gatherv(partC,row_count * column_count,MPI_DOUBLE,partC,receiveCounts,displacement,block,0,gridCommunicator);
+    MPI_Type_free(&block);
+    destroyIntArray(receiveCounts);
+    destroyIntArray(displacement);
+}
+
+
 int main(int argc, char** argv) {
     int p1 = 2;
     int p2 = 2;
@@ -72,10 +93,11 @@ int main(int argc, char** argv) {
 
     double* A;
     double* B;
-
+    double* C;
     if (process_rank == 0) {
         A = (double*)malloc(sizeof(double) * n1 * n2);
         B = (double*)malloc(sizeof(double) * n2 * n3);
+        C = (double*)malloc(sizeof(double) * n1 * n3);
         fillMatrix(A, n1, n2);
         fillMatrix(B, n2, n3);
     }
@@ -141,21 +163,7 @@ int main(int argc, char** argv) {
     }
 
     if (process_rank == 0) {
-        double *C = (double *) calloc(n1 * n3, sizeof(double));
-        for (int i = 0; i < row_count; i++) {
-            for (int j = 0; j < column_count; j++) {
-                C[i * n3 + j] = partC[i * column_count + j];
-            }
-        }
-
-        for (int i = 0; i < p1; i++) {
-            for (int j = 0; j < p2; j++) {
-                if (!(i == 0 && j == 0)) {
-                    MPI_Status status;
-                    MPI_Recv(C + i * n3 * row_count + j * column_count,
-                             n1 * n3, partCType, i * p2 + j, 0, MPI_COMM_WORLD, &status);
-                }
-            }
+        collectData(partC, C, MPI_Comm comm_grid, dims, process_count);
         }
         free(A);
         free(B);
