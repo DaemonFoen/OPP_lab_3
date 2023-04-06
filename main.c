@@ -3,15 +3,16 @@
 #include <stdlib.h>
 #define DIMENSION 2
 
-const int n1 = 600; //6000
-const int n2 = 500; //5000
-const int n3 = 400; //4000
+const int n1 = 4; //6000
+const int n2 = 4; //5000
+const int n3 = 4; //4000
 
 
 void fillMatrix (double* matrix, int N, int M) {
+    int tmp = 1;
     for (int i = 0; i < N; i++) {
         for (int j = 0; j < M; j++) {
-            matrix[i * M + j] = 1;
+            matrix[i * M + j] = (tmp++)%5;
         }
     }
 }
@@ -29,12 +30,12 @@ void mulMatrix (double* A, double* B, double* C, int row_count, int column_size,
 }
 
 
-void collectData(double *partC, double *C, MPI_Comm gridCommunicator, int *dims, int processNum) {
+void collectData(double *partC, double *C, MPI_Comm gridCommunicator, int *dims, int processNum, int row_count, int column_count) {
     MPI_Datatype block;
     MPI_Type_vector(row_count, column_count, n2, MPI_DOUBLE, &block);
     MPI_Type_commit(&block);
-    int *receiveCounts = calloc(len, sizeof(int) * processNum);
-    int *displacement = calloc(len, sizeof(int) * processNum);
+    int *receiveCounts = (int*)calloc(processNum, sizeof(int) * processNum);
+    int *displacement = (int*)calloc(processNum, sizeof(int) * processNum);
     int coords[2];
     for (int i = 0; i < processNum; ++i) {
         receiveCounts[i] = 1;
@@ -43,10 +44,10 @@ void collectData(double *partC, double *C, MPI_Comm gridCommunicator, int *dims,
     }
     int rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    MPI_Gatherv(partC,row_count * column_count,MPI_DOUBLE,partC,receiveCounts,displacement,block,0,gridCommunicator);
+    MPI_Gatherv(partC,row_count * column_count,MPI_DOUBLE,C,receiveCounts,displacement,block,0,gridCommunicator);
     MPI_Type_free(&block);
-    destroyIntArray(receiveCounts);
-    destroyIntArray(displacement);
+    free(receiveCounts);
+    free(displacement);
 }
 
 
@@ -132,8 +133,8 @@ int main(int argc, char** argv) {
 
     MPI_Datatype columnType;
     MPI_Datatype columnTypeResized;
-    MPI_Type_vector(n2, 1, n3, MPI_DOUBLE, &columnType);
-    MPI_Type_create_resized(columnType, 0, sizeof(double), &columnTypeResized);
+    MPI_Type_vector(n3, n2, n2, MPI_DOUBLE, &columnType);
+    MPI_Type_create_resized(columnType, 0, sizeof(double)*n3, &columnTypeResized);
     MPI_Type_commit(&columnType);
     MPI_Type_commit(&columnTypeResized);
 
@@ -145,40 +146,39 @@ int main(int argc, char** argv) {
 
 
 //    if (process_rank == 0){
-//        for (int i = 0; i < n2 * column_count; ++i) {
-//            printf("[%f]",partB[i]);
-//        }
+        for (int i = 0; i < n2; ++i) {
+            printf("[%f] %d\n",partB[i],process_rank);
+        }
 //    }
 
-    mulMatrix(partA, partB, partC, row_count, n2, column_count);
-
-
-    MPI_Datatype partCType;
-    MPI_Type_vector(row_count, column_count, n3, MPI_DOUBLE, &partCType);
-    MPI_Type_commit(&partCType);
-
-//    отправляем матрицу С нулевому процессу
-    if (process_rank != 0) {
-        MPI_Send(partC, row_count * column_count, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD);
-    }
-
-    if (process_rank == 0) {
-        collectData(partC, C, MPI_Comm comm_grid, dims, process_count);
-        }
-        free(A);
-        free(B);
-        free(C);
-    }
-
-
-    double end = MPI_Wtime();
-    if (process_rank == 0) {
-        printf("p1 = %d p2 = %d time = %lf\n", p1, p2, end - start);
-    }
-
-    free(partA);
-    free(partB);
-    free(partC);
+//    mulMatrix(partA, partB, partC, row_count, n2, column_count);
+//
+//
+//    MPI_Datatype partCType;
+//    MPI_Type_vector(row_count, column_count, n3, MPI_DOUBLE, &partCType);
+//    MPI_Type_commit(&partCType);
+//
+////    отправляем матрицу С нулевому процессу
+//    if (process_rank != 0) {
+//        MPI_Send(partC, row_count * column_count, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD);
+//    }
+//
+//    if (process_rank == 0) {
+//        collectData(partC, C,comm_grid, dims,process_count, row_count, column_count);
+//        free(A);
+//        free(B);
+//        free(C);
+//    }
+//
+//
+//    double end = MPI_Wtime();
+//    if (process_rank == 0) {
+//        printf("p1 = %d p2 = %d time = %lf\n", p1, p2, end - start);
+//    }
+//
+//    free(partA);
+//    free(partB);
+//    free(partC);
     MPI_Finalize();
     return 0;
 }
