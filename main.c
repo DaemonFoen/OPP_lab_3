@@ -4,15 +4,15 @@
 #define DIMENSION 2
 
 const int n1 = 4; //6000
-const int n2 = 4; //5000
-const int n3 = 4; //4000
+const int n2 = 5; //5000
+const int n3 = 6; //4000
 
 
 void fillMatrix (double* matrix, int N, int M) {
     int tmp = 1;
     for (int i = 0; i < N; i++) {
         for (int j = 0; j < M; j++) {
-            matrix[i * M + j] = (tmp++)%5;
+            matrix[i * M + j] = (tmp++);
         }
     }
 }
@@ -130,26 +130,34 @@ int main(int argc, char** argv) {
 //        }
 //    }
 
-
     MPI_Datatype columnType;
     MPI_Datatype columnTypeResized;
-    MPI_Type_vector(n3, n2, n2, MPI_DOUBLE, &columnType);
-    MPI_Type_create_resized(columnType, 0, sizeof(double)*n3, &columnTypeResized);
+    MPI_Type_vector(n2, 1, n3, MPI_DOUBLE, &columnType);
+    MPI_Type_create_resized(columnType, 0, sizeof(double), &columnTypeResized);
     MPI_Type_commit(&columnType);
     MPI_Type_commit(&columnTypeResized);
 
-    //Раздаем столбцы матрицы B по всему коммутатору столбцов
-    if (coord_of_process[0] == 0) {
-        MPI_Scatter(B, column_count, columnTypeResized, partB, column_count, columnTypeResized, 0, comm_rows);
+    if (process_rank == 0){
+        for (int i = 0; i < n2 * n3; ++i){
+            printf("[%f]\n",B[i]);
+        }
+        printf("----------------------------------------------------------------\n"
+               "----------------------------------------------------------------\n");
     }
-    MPI_Bcast(partB, column_count, columnTypeResized, 0, comm_columns);
+
+//    Раздаем столбцы матрицы B по всему коммутатору столбцов
+    if (coord_of_process[0] == 0) {
+        MPI_Scatter(B, column_count, columnTypeResized, partB, column_count * n2, MPI_DOUBLE, 0, comm_rows);
+    }
+    MPI_Bcast(partB, column_count * n2, MPI_DOUBLE, 0, comm_columns);
 
 
 //    if (process_rank == 0){
-        for (int i = 0; i < n2; ++i) {
+        for (int i = 0; i < n2 * column_count ; ++i) {
             printf("[%f] %d\n",partB[i],process_rank);
         }
 //    }
+
 
 //    mulMatrix(partA, partB, partC, row_count, n2, column_count);
 //
