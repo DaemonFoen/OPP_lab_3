@@ -1,192 +1,182 @@
 #include <stdio.h>
-#include <mpi.h>
 #include <stdlib.h>
+#include <mpi.h>
+
 #define DIMENSION 2
+#define P1 2
+#define P2 12
+#define TRUE 1
+#define FALSE 0
+#define SEND_COLUMN 5
 
-const int n1 = 4; //6000
-const int n2 = 5; //5000
-const int n3 = 6; //4000
+#define N1 9000
+#define N2 1000
+#define N3 9000
 
+typedef struct coords {
+    int row;
+    int col;
+} ProcCoords;
 
-void fillMatrix (double* matrix, int N, int M) {
-    int tmp = 1;
-    for (int i = 0; i < N; i++) {
-        for (int j = 0; j < M; j++) {
-            matrix[i * M + j] = (tmp++);
+void fill_matrix(double *matrix, int row_dim, int col_dim) {
+    int tmp = 0;
+    for (int i = 0; i < row_dim; i++) {
+        for (int j = 0; j < col_dim; j++) {
+            matrix[i * col_dim + j] = tmp;
+            tmp += 1;
         }
     }
 }
 
 
-void mulMatrix (double* A, double* B, double* C, int row_count, int column_size, int column_count) {
-    for (int i = 0; i < row_count; i++) {
-        for (int j = 0; j < column_count; j++) {
-            C[i * column_count + j] = 0;
-            for (int k = 0; k < column_size; k++) {
-                C[i * column_count + j] += A[i * column_size + k] * B[k * column_count + j];
+void send_A_on_main_column(ProcCoords current_process_coords, MPI_Comm columns_communicator, double *A, double *part_of_A) {
+    if (current_process_coords.col == 0) {
+        MPI_Scatter(A, (N1 / P1) * N2, MPI_DOUBLE, part_of_A, (N1 / P1) * N2, MPI_DOUBLE, 0, columns_communicator);
+    }
+}
+
+void send_B_on_main_row(int current_process_rank, MPI_Comm rows_communicator, double *B, double *part_of_B, ProcCoords current_process_coords) {
+    if (current_process_rank == 0) {
+        MPI_Datatype column_bypass;
+        MPI_Type_vector(N2, N3 / P2, N3, MPI_DOUBLE, &column_bypass);
+        MPI_Type_commit(&column_bypass);
+
+        for (int i = 1; i < P2; i++) {
+            MPI_Send(B + (N3 / P2) * i, 1, column_bypass, i, SEND_COLUMN, rows_communicator);
+        }
+        for (int i = 0, k = 0; i < N3 * N2;) {
+            for (int j = 0; j < N3 / P2; j++) {
+                part_of_B[k + j] = B[i + j];
             }
+            i += N3;
+            k += N3 / P2;
+        }
+        MPI_Type_free(&column_bypass);
+    }
+    if (current_process_coords.row == 0 && current_process_rank != 0) {
+        MPI_Datatype cont_column_bypass;
+        MPI_Type_contiguous(N2 * N3 / P2, MPI_DOUBLE, &cont_column_bypass);
+        MPI_Type_commit(&cont_column_bypass);
+        MPI_Status stat;
+        MPI_Recv(part_of_B, 1, cont_column_bypass, 0, SEND_COLUMN, rows_communicator, &stat);
+        MPI_Type_free(&cont_column_bypass);
+    }
+}
+
+void matrix_mult(double *res_matrix, double *left_operand, double *right_operand, int res_row_dim, int res_col_dim, int n2_dim) {
+    for (int i = 0; i < res_row_dim; i++) {
+        for (int j = 0; j < res_col_dim; j++) {
+            res_matrix[i * res_col_dim + j] = 0;
+            for (int k = 0; k < n2_dim; k++)
+                res_matrix[i * res_col_dim + j] += left_operand[i * res_col_dim + k] * right_operand[k * res_col_dim + j];
         }
     }
 }
 
-
-void collectData(double *partC, double *C, MPI_Comm gridCommunicator, int *dims, int processNum, int row_count, int column_count) {
-    MPI_Datatype block;
-    MPI_Type_vector(row_count, column_count, n2, MPI_DOUBLE, &block);
-    MPI_Type_commit(&block);
-    int *receiveCounts = (int*)calloc(processNum, sizeof(int) * processNum);
-    int *displacement = (int*)calloc(processNum, sizeof(int) * processNum);
-    int coords[2];
-    for (int i = 0; i < processNum; ++i) {
-        receiveCounts[i] = 1;
-        MPI_Cart_coords(gridCommunicator, i, 2, coords);
-        displacement[i] = dims[0] * (row_count) * coords[1] + coords[0];
+void collect_data(int current_process_rank, int processes_count, MPI_Comm grid_communicator, double *C, double *part_of_C) {
+    MPI_Datatype part_col_C;
+    MPI_Type_vector(N1 / P1, N3 / P2, N3 / P2, MPI_DOUBLE, &part_col_C);
+    MPI_Type_commit(&part_col_C);
+    if (current_process_rank != 0) {
+        MPI_Send(part_of_C, 1, part_col_C, 0, 0, MPI_COMM_WORLD);
     }
-    int rank;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    MPI_Gatherv(partC,row_count * column_count,MPI_DOUBLE,C,receiveCounts,displacement,block,0,gridCommunicator);
-    MPI_Type_free(&block);
-    free(receiveCounts);
-    free(displacement);
+    if (current_process_rank == 0) {
+        MPI_Status stat;
+        MPI_Datatype C_rec;
+        MPI_Type_vector(N1 / P1, N3 / P2, N3, MPI_DOUBLE, &C_rec);
+        MPI_Type_commit(&C_rec);
+
+        for (int i = 1; i < processes_count; i++) {
+            int coords[DIMENSION];
+            MPI_Cart_coords(grid_communicator, i, DIMENSION, coords);
+            ProcCoords process_coords;
+            process_coords.col = coords[1];
+            process_coords.row = coords[0];
+            int offset = process_coords.col * (N3 / P2) + process_coords.row * N3 * (N1 / P1);
+            MPI_Recv(C + offset, 1, C_rec, i, 0, MPI_COMM_WORLD, &stat);
+        }
+        MPI_Type_free(&C_rec);
+        for (int i = 0; i < N1 / P1;) {
+            for (int j = 0; j < N3 / P2; j++) {
+                C[i * N3 + j] = part_of_C[i * (N3 / P2) + j];
+            }
+            i += 1;
+        }
+    }
+    MPI_Type_free(&part_col_C);
 }
 
-
-int main(int argc, char** argv) {
-    int p1 = 2;
-    int p2 = 2;
-    int process_rank;
-    int process_count;
-
+int main(int argc, char **argv) {
+    int current_process_rank = 0;
+    int processes_count = 0;
+    double time_start = 0;
+    double time_end = 0;
 
     MPI_Init(&argc, &argv);
-    double start = MPI_Wtime();
+    time_start = MPI_Wtime();
+    MPI_Comm_size(MPI_COMM_WORLD, &processes_count);
+    MPI_Comm_rank(MPI_COMM_WORLD, &current_process_rank);
+    int dims[DIMENSION] = {P1, P2};
+    int periods[DIMENSION] = {FALSE, FALSE};
+    int reorder = FALSE;
+    MPI_Comm grid_communicator;
+    MPI_Cart_create(MPI_COMM_WORLD, DIMENSION, dims, periods, reorder, &grid_communicator);
 
-    //Общее число процессов
-    MPI_Comm_size(MPI_COMM_WORLD, &process_count);
-    //Номер процесса
-    MPI_Comm_rank(MPI_COMM_WORLD, &process_rank);
+    int coord_of_process[DIMENSION];
+    MPI_Cart_coords(grid_communicator, current_process_rank, DIMENSION, coord_of_process);
+    ProcCoords current_process_coords;
+    current_process_coords.col = coord_of_process[1];
+    current_process_coords.row = coord_of_process[0];
 
+    MPI_Comm rows_communicator;
+    int varying_coords_rows[DIMENSION] = {FALSE, TRUE}; // фиксируем первую координату, вторая меняется
+    MPI_Cart_sub(grid_communicator, varying_coords_rows, &rows_communicator);
 
+    MPI_Comm columns_communicator;
+    int varying_coords_columns[DIMENSION] = {TRUE, FALSE}; // фиксируем вторую координату, первая меняется
+    MPI_Cart_sub(grid_communicator, varying_coords_columns, &columns_communicator);
 
-    //Создаем решетку процессов
-    int ndims = DIMENSION; //размерность декартовой решетки
-    int dims[DIMENSION] = {p1, p2}; //целочисленный массив, состоящий из ndims элементов, задающий количество процессов в каждом измерении
-    int periodic[DIMENSION] = {0, 0};  //не замыкаем
-    int reorder = 0; //не меняем порядок нумерации процессов в новом коммутаторе
-    MPI_Comm comm_grid;
-    MPI_Cart_create(MPI_COMM_WORLD, ndims, dims, periodic, reorder, &comm_grid);
+    double *A;
+    double *B;
+    double *C;
+    double *part_of_A;
+    double *part_of_B;
+    double *part_of_C;
+    part_of_A = (double *) malloc(sizeof(double) * (N1 / P1) * N2);
+    part_of_B = (double *) malloc(sizeof(double) * (N3 / P2) * N2);
+    part_of_C = (double *) malloc(sizeof(double) * (N3 / P2) * (N1 / P1));
 
-
-    int coord_of_process[DIMENSION]; // координаты процесса в декартовой решетке
-    MPI_Cart_coords(comm_grid, process_rank, DIMENSION, coord_of_process);
-
-    //коммуникатор строк решетки
-    MPI_Comm comm_rows;
-    int remain_dims_rows[DIMENSION] = {0, 1};
-    MPI_Cart_sub(comm_grid, remain_dims_rows, &comm_rows);
-
-    //коммутатор столбцов решетки
-    MPI_Comm comm_columns;
-    int remain_dims_columns[DIMENSION] = {1, 0};
-    MPI_Cart_sub(comm_grid, remain_dims_columns, &comm_columns);
-
-
-
-    double* A;
-    double* B;
-    double* C;
-    if (process_rank == 0) {
-        A = (double*)malloc(sizeof(double) * n1 * n2);
-        B = (double*)malloc(sizeof(double) * n2 * n3);
-        C = (double*)malloc(sizeof(double) * n1 * n3);
-        fillMatrix(A, n1, n2);
-        fillMatrix(B, n2, n3);
+    if (current_process_rank == 0) {
+        A = (double *) malloc(sizeof(double) * N1 * N2);
+        B = (double *) malloc(sizeof(double) * N2 * N3);
+        C = (double *) malloc(sizeof(double) * N1 * N3);
+        fill_matrix(A, N1, N2);
+        fill_matrix(B, N2, N3);
+        fill_matrix(C, N1, N3);
     }
 
-    //Количество строк в сообщении
-    int row_count = n1 / p1;
-    //Колонок в сообщении
-    int column_count = n3 / p2;
+    send_A_on_main_column(current_process_coords, columns_communicator, A, part_of_A);
+    send_B_on_main_row(current_process_rank, rows_communicator, B, part_of_B, current_process_coords);
 
-    double* partA = (double*)malloc(sizeof(double) * row_count * n2);
-    double* partB = (double*)malloc(sizeof(double) * n2 * column_count);
-    double* partC = (double*)malloc(sizeof(double) * row_count * column_count);
+    MPI_Bcast(part_of_A, (N1 / P1) * N2, MPI_DOUBLE, 0, rows_communicator);
+    MPI_Bcast(part_of_B, N3 / P2 * N2, MPI_DOUBLE, 0, columns_communicator);
 
+    matrix_mult(part_of_C, part_of_A, part_of_B, N1 / P1, N3 / P2, N2);
+    collect_data(current_process_rank, processes_count, grid_communicator, C, part_of_C);
 
-    MPI_Datatype rowType;
-    MPI_Type_contiguous(n2, MPI_DOUBLE, &rowType);
-    MPI_Type_commit(&rowType);
-
-    //Раздаем строки матрицы А по всему коммутатору строк
-    if (coord_of_process[1] == 0) {
-        MPI_Scatter(A, row_count, rowType, partA, row_count, rowType, 0, comm_columns);
-    }
-    MPI_Bcast(partA, row_count, rowType, 0, comm_rows);
-
-
-//    if (process_rank == 0){
-//        for (int i = 0; i < n2 * row_count; ++i) {
-//            printf("[%f]",partA[i]);
-//        }
-//    }
-
-    MPI_Datatype columnType;
-    MPI_Datatype columnTypeResized;
-    MPI_Type_vector(n2, 1, n3, MPI_DOUBLE, &columnType);
-    MPI_Type_create_resized(columnType, 0, sizeof(double), &columnTypeResized);
-    MPI_Type_commit(&columnType);
-    MPI_Type_commit(&columnTypeResized);
-
-    if (process_rank == 0){
-        for (int i = 0; i < n2 * n3; ++i){
-            printf("[%f]\n",B[i]);
-        }
-        printf("----------------------------------------------------------------\n"
-               "----------------------------------------------------------------\n");
+    if (current_process_coords.row == 0 && current_process_coords.col == 0) {
+        free(A);
+        free(B);
+        free(C);
     }
 
-//    Раздаем столбцы матрицы B по всему коммутатору столбцов
-    if (coord_of_process[0] == 0) {
-        MPI_Scatter(B, column_count, columnTypeResized, partB, column_count * n2, MPI_DOUBLE, 0, comm_rows);
-    }
-    MPI_Bcast(partB, column_count * n2, MPI_DOUBLE, 0, comm_columns);
+    free(part_of_A);
+    free(part_of_B);
+    free(part_of_C);
 
-
-//    if (process_rank == 0){
-        for (int i = 0; i < n2 * column_count ; ++i) {
-            printf("[%f] %d\n",partB[i],process_rank);
-        }
-//    }
-
-
-//    mulMatrix(partA, partB, partC, row_count, n2, column_count);
-//
-//
-//    MPI_Datatype partCType;
-//    MPI_Type_vector(row_count, column_count, n3, MPI_DOUBLE, &partCType);
-//    MPI_Type_commit(&partCType);
-//
-////    отправляем матрицу С нулевому процессу
-//    if (process_rank != 0) {
-//        MPI_Send(partC, row_count * column_count, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD);
-//    }
-//
-//    if (process_rank == 0) {
-//        collectData(partC, C,comm_grid, dims,process_count, row_count, column_count);
-//        free(A);
-//        free(B);
-//        free(C);
-//    }
-//
-//
-//    double end = MPI_Wtime();
-//    if (process_rank == 0) {
-//        printf("p1 = %d p2 = %d time = %lf\n", p1, p2, end - start);
-//    }
-//
-//    free(partA);
-//    free(partB);
-//    free(partC);
+    time_end = MPI_Wtime();
+    double time_spent = (double) (time_end - time_start);
+    if (current_process_rank == 0) printf("EXECUTION TOOK %f\t SECONDS\n", time_spent);
     MPI_Finalize();
     return 0;
 }
