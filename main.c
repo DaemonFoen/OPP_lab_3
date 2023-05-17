@@ -64,14 +64,21 @@ void send_B_on_main_row(int current_process_rank, MPI_Comm rows_communicator, do
 }
 
 void matrix_mult(double *res_matrix, double *left_operand, double *right_operand, int res_row_dim, int res_col_dim, int n2_dim) {
-    for (int i = 0; i < res_row_dim; i++) {
-        for (int j = 0; j < res_col_dim; j++) {
-            res_matrix[i * res_col_dim + j] = 0;
-            for (int k = 0; k < n2_dim; k++)
-                res_matrix[i * res_col_dim + j] += left_operand[i * res_col_dim + k] * right_operand[k * res_col_dim + j];
+    for (int i = 0; i < res_row_dim; ++i) {
+        double* c = res_matrix + i * res_col_dim;
+        for (int j = 0; j < res_col_dim; ++j) {
+            c[j] = 0;
+        }
+        for (int k = 0; k < n2_dim; ++k) {
+            double* b = right_operand + k * res_col_dim;
+            double a = left_operand[i * n2_dim + k];
+            for (int j = 0; j < res_col_dim; ++j) {
+                c[j] += a * b[j];
+            }
         }
     }
 }
+
 
 void collect_data(int current_process_rank, int processes_count, MPI_Comm grid_communicator, double *C, double *part_of_C) {
     MPI_Datatype part_col_C;
